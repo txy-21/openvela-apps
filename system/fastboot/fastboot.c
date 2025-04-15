@@ -44,6 +44,7 @@
 #include <sys/statfs.h>
 #include <sys/types.h>
 #include <sys/poll.h>
+#include <sys/wait.h>
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -178,6 +179,10 @@ static void fastboot_memdump(FAR struct fastboot_ctx_s *context,
                              FAR const char *arg);
 static void fastboot_filedump(FAR struct fastboot_ctx_s *context,
                               FAR const char *arg);
+#ifdef CONFIG_SYSTEM_FASTBOOTD_SHELL
+static void fastboot_shell(FAR struct fastboot_ctx_s *context,
+                           FAR const char *arg);
+#endif
 
 /****************************************************************************
  * Private Data
@@ -198,7 +203,10 @@ static const struct fastboot_cmd_s g_fast_cmd[] =
 static const struct fastboot_cmd_s g_oem_cmd[] =
 {
   { "filedump",           fastboot_filedump         },
-  { "memdump",            fastboot_memdump          }
+  { "memdump",            fastboot_memdump          },
+#ifdef CONFIG_SYSTEM_FASTBOOTD_SHELL
+  { "shell",              fastboot_shell            },
+#endif
 };
 
 /****************************************************************************
@@ -258,9 +266,15 @@ static void fastboot_ack(FAR struct fastboot_ctx_s *context,
 }
 
 static void fastboot_fail(FAR struct fastboot_ctx_s *context,
-                          FAR const char *reason)
+                          FAR const char *fmt, ...)
 {
+  char reason[FASTBOOT_MSG_LEN];
+  va_list ap;
+
+  va_start(ap, fmt);
+  vsnprintf(reason, sizeof(reason), fmt, ap);
   fastboot_ack(context, "FAIL", reason);
+  va_end(ap);
 }
 
 static void fastboot_okay(FAR struct fastboot_ctx_s *context,
@@ -768,6 +782,37 @@ static void fastboot_filedump(FAR struct fastboot_ctx_s *context,
   fastboot_okay(context, "");
 }
 
+#ifdef CONFIG_SYSTEM_FASTBOOTD_SHELL
+static void fastboot_shell(FAR struct fastboot_ctx_s *context,
+                           FAR const char *arg)
+{
+  char response[FASTBOOT_MSG_LEN - 4];
+  FILE *fp;
+  int ret;
+
+  fp = popen(arg, "r");
+  if (fp == NULL)
+    {
+      fastboot_fail(context, "popen() fails %d", errno);
+      return;
+    }
+
+  while (fgets(response, sizeof(response), fp))
+    {
+      fastboot_ack(context, "TEXT", response);
+    }
+
+  ret = pclose(fp);
+  if (WIFEXITED(ret) && WEXITSTATUS(ret) == 0)
+    {
+      fastboot_okay(context, "");
+      return;
+    }
+
+  fastboot_fail(context, "error detected 0x%x %d", ret, errno);
+}
+#endif
+
 static void fastboot_upload(FAR struct fastboot_ctx_s *context,
                             FAR const char *arg)
 {
@@ -956,7 +1001,7 @@ int main(int argc, FAR char **argv)
   FAR void *buffer = NULL;
   int ret = OK;
 
-#ifdef CONFIG_FASTBOOTD_USB_BOARDCTL
+#ifdef CONFIG_SYSTEM_FASTBOOTD_USB_BOARDCTL
   struct boardioc_usbdev_ctrl_s ctrl;
 #  ifdef CONFIG_USBDEV_COMPOSITE
     uint8_t dev = BOARDIOC_USBDEV_COMPOSITE;
@@ -990,7 +1035,7 @@ int main(int argc, FAR char **argv)
       fb_err("boardctl(BOARDIOC_USBDEV_CONTROL) failed: %d\n", ret);
       return ret;
     }
-#endif /* FASTBOOTD_USB_BOARDCTL */
+#endif /* SYSTEM_FASTBOOTD_USB_BOARDCTL */
 
   if (argc > 1)
     {
